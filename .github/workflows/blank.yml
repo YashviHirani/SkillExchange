@@ -1,0 +1,131 @@
+name: CI — TimeBank
+ 
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+ 
+jobs:
+  # ─── Job 1: Frontend Lint & Build ─────────────────────
+  build-frontend:
+    name: 🎨 Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+ 
+      - name: Install dependencies
+        run: npm ci
+ 
+      - name: Lint (ESLint)
+        run: npm run lint --if-present
+ 
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+ 
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 3
+ 
+  # ─── Job 2: Backend Tests ──────────────────────────────
+  test-backend:
+    name: 🛠️ Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+ 
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+ 
+      - name: Install dependencies
+        run: npm ci
+ 
+      - name: Run tests
+        run: npm test
+        env:
+          NODE_ENV: test
+          MONGODB_URI: mongodb://localhost:27017/timebank_test
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+ 
+  # ─── Job 3: Merge Conflict Check ──────────────────────
+  check-conflicts:
+    name: 🔀 Check Merge Conflicts
+    runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/main'
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+ 
+      - name: Attempt merge with main
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+ 
+          git fetch origin main
+ 
+          if git merge origin/main --no-commit --no-ff; then
+            echo "✅ No merge conflicts with main detected!"
+            git merge --abort 2>/dev/null || true
+          else
+            echo "❌ MERGE CONFLICT DETECTED!"
+            echo "Pull the latest main branch and resolve conflicts locally before pushing."
+            git merge --abort 2>/dev/null || true
+            exit 1
+          fi
+ 
+  # ─── Job 4: All Clear Gate ────────────────────────────
+  ci-passed:
+    name: ✅ CI Passed
+    runs-on: ubuntu-latest
+    needs: [build-frontend, test-backend]
+    if: always()
+ 
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.build-frontend.result }}" == "success" && "${{ needs.test-backend.result }}" == "success" ]]; then
+            echo "🎉 All checks passed! Safe to merge."
+          else
+            echo "💥 One or more checks failed."
+            exit 1
+          fi
+ 
